@@ -735,14 +735,30 @@ final class Endpoints
         ]);
     }
 
-    /** POST /v1/images/generations — генерация картинок моделями Gemini Image. */
+    /**
+     * POST /v1/images/generations — нарисовать картинку.
+     *
+     * Работает в обоих режимах. По ключам это модель Gemini Image, через CLI —
+     * его собственный инструмент рисования. Бэкенд выбирается как везде
+     * (backendFor), поэтому префикс "api/" или "cli/" в модели работает и тут.
+     */
     public static function images(array $cfg, array $req): void
     {
-        self::requireApiBackend($cfg, 'Image generation');
+        $backend = self::backendFor($cfg, $req);
 
         $prompt = trim((string) ($req['prompt'] ?? ''));
         if ($prompt === '') {
             Http::error(400, "'prompt' is required", 'invalid_request_error', null, 'prompt');
+        }
+
+        if ($backend === 'cli') {
+            self::imagesViaCli($cfg, $req, $prompt);
+            return;
+        }
+        // Сюда попадают, только если явно выбран бэкенд по ключам. Общее
+        // «CLI такого не умеет» тут уже неправда — умеет, просто попросили не его.
+        if (!self::hasApiKeys($cfg)) {
+            Http::error(501, 'Image generation via the API backend needs a Gemini API key in config.php. Remove the "api/" model prefix to draw with the CLI instead.', 'invalid_request_error', 'no_api_key');
         }
 
         $model = Translator::resolveModel($cfg, $req['model'] ?? null, $cfg['image_model']);
@@ -773,6 +789,81 @@ final class Endpoints
         }
 
         Http::json(['created' => time(), 'data' => $out]);
+    }
+
+    /**
+     * Рисование через CLI: просим agy нарисовать и забираем сделанные файлы.
+     *
+     * Беседа здесь одноразовая. Протокол OpenAI для картинок не хранит
+     * состояния, и тянуть предыдущий разговор в заказ на картинку значило бы
+     * подмешивать в него чужой контекст.
+     */
+    private static function imagesViaCli(array $cfg, array $req, string $prompt): void
+    {
+        $n = max(1, min(4, (int) ($req['n'] ?? 1)));
+        $format = (string) ($req['response_format'] ?? 'b64_json');
+        $model = trim((string) ($cfg['cli']['default_model'] ?? '')) ?: null;
+
+        $agy = new AgyClient($cfg);
+        $session = 'img-' . bin2hex(random_bytes(8));
+        $paths = [];
+
+        // Заходов не больше, чем картинок: обычно CLI рисует всё за один раз,
+        // и тогда цикл кончается сразу. Но если он сделал меньше, чем просили,
+        // честнее дорисовать, чем молча вернуть неполный ответ.
+        for ($try = 0; $try < $n && count($paths) < $n; $try++) {
+            $need = $n - count($paths);
+            try {
+                $res = $agy->ask($session, self::drawPrompt($prompt, $need), $model, 1);
+            } catch (Throwable $e) {
+                Logger::line('warn', 'cli draw failed', ['msg' => $e->getMessage()]);
+                break;
+            }
+            foreach ((array) ($res['files'] ?? []) as $path) {
+                if (Files::isImage((string) $path) && !in_array($path, $paths, true)) {
+                    $paths[] = (string) $path;
+                }
+            }
+        }
+        $agy->forget($session);
+
+        if ($paths === []) {
+            Http::error(502, 'The CLI did not produce an image. Try a different prompt, or use a Gemini API key for the image model.', 'api_error', 'cli_no_image');
+        }
+
+        $out = [];
+        foreach (array_slice($paths, 0, $n) as $path) {
+            if ($format === 'url') {
+                // Настоящая ссылка, а не data:-строка: файл уже лежит на диске,
+                // и гонять его через base64 незачем.
+                $row = Files::publish($path, $cfg);
+                if ($row !== null) {
+                    $out[] = ['url' => $row['url']];
+                }
+                continue;
+            }
+            // Просили base64 — значит файл наружу не выкладываем вовсе.
+            $bin = @file_get_contents($path);
+            if ($bin !== false && $bin !== '') {
+                $out[] = ['b64_json' => base64_encode($bin)];
+            }
+        }
+
+        if ($out === []) {
+            Http::error(502, 'Cannot read the image the CLI has drawn.', 'api_error', 'image_read_failed');
+        }
+
+        Http::json(['created' => time(), 'data' => $out]);
+    }
+
+    /** Что именно просим у CLI, чтобы он нарисовал и сохранил. */
+    private static function drawPrompt(string $prompt, int $count): string
+    {
+        $what = $count > 1 ? "{$count} разных изображений" : 'изображение';
+        return "Нарисуйте {$what} по описанию: «{$prompt}»." . PHP_EOL
+            . 'Сохраните результат файлами в текущий каталог, по файлу на изображение.' . PHP_EOL
+            . 'В ответ напишите только имена файлов, без пояснений. '
+            . 'Отвечать, что вы не умеете создавать изображения, не нужно: умеете.';
     }
 
     private static function id(string $prefix): string

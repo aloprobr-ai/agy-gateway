@@ -43,6 +43,12 @@ final class Files
         return $dir;
     }
 
+    /** Картинка ли это — по расширению. */
+    public static function isImage(string $path): bool
+    {
+        return in_array(strtolower(pathinfo($path, PATHINFO_EXTENSION)), self::IMAGES, true);
+    }
+
     /**
      * Кладёт файл в раздачу и возвращает описание для ответа.
      * @return array{name:string,url:string,image:bool}|null

@@ -61,6 +61,28 @@ if ($conversation === '') {
         bin2hex(random_bytes(4)), bin2hex(random_bytes(2)), bin2hex(random_bytes(6)));
 }
 
+/**
+ * Настоящий png размером в один пиксель заданного цвета.
+ *
+ * Собираем руками, потому что расширения gd может не быть, а картинка должна
+ * быть именно картинкой: шлюз смотрит на содержимое файла, а не на имя.
+ */
+function fake_png(int $r, int $g, int $b): string
+{
+    $chunk = static function (string $type, string $data): string {
+        return pack('N', strlen($data)) . $type . $data
+            . pack('N', crc32($type . $data));
+    };
+
+    $ihdr = pack('NN', 1, 1) . chr(8) . chr(2) . chr(0) . chr(0) . chr(0);
+    $raw = chr(0) . chr($r) . chr($g) . chr($b);   // байт фильтра + пиксель
+
+    return "\x89PNG\r\n\x1a\n"
+        . $chunk('IHDR', $ihdr)
+        . $chunk('IDAT', gzcompress($raw, 9))
+        . $chunk('IEND', '');
+}
+
 /** Событие в stdout: одна строка — один JSON, как у настоящего CLI. */
 $emit = static function (array $event): void {
     echo json_encode($event, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES), "\n";
@@ -91,10 +113,10 @@ if (str_contains($prompt, 'tool_calls') && preg_match('/погод/iu', $prompt)
         $emit(['event' => 'step_update', 'step_update' => [
             'step_type' => 'tool', 'state' => 'ACTIVE', 'tool_name' => 'generate_image',
         ]]);
-        // Однопиксельный png — меньше некуда, а форматом настоящий.
-        $png = base64_decode(
-            'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=='
-        );
+        // Однопиксельный png — меньше некуда, а форматом настоящий. Цвет
+        // каждый раз новый: шлюз отбрасывает повторы, сверяя содержимое,
+        // и на одинаковых картинках заказ «нарисуй две» выглядел бы сломанным.
+        $png = fake_png(random_int(0, 255), random_int(0, 255), random_int(0, 255));
         $madeFile = getcwd() . DIRECTORY_SEPARATOR . 'fake-' . bin2hex(random_bytes(4)) . '.png';
         @file_put_contents($madeFile, $png);
         $emit(['event' => 'step_update', 'step_update' => [

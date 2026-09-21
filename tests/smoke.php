@@ -282,6 +282,31 @@ if ($r['status'] === 501) {
     check('POST /v1/embeddings', $r['status'] === 200 && $dim > 0, 'размерность: ' . $dim);
 }
 
+// 11. рисование: работает в обоих режимах — по ключам это модель Gemini Image,
+// через CLI его собственный инструмент.
+$r = req('POST', $base . '/v1/images/generations', [
+    'prompt' => 'простая картинка: рыжий кот на подоконнике',
+    'n' => 1,
+    'response_format' => 'url',
+], $key);
+$img = json_decode($r['body'], true);
+$url = (string) ($img['data'][0]['url'] ?? '');
+check('POST /v1/images/generations', $r['status'] === 200 && $url !== '',
+    $url !== '' ? $url : ('HTTP ' . $r['status']));
+
+// Ссылка должна не просто вернуться, а открываться и быть картинкой:
+// адрес в ответе — это обещание, и проверять надо его, а не наличие строки.
+if ($url !== '' && !str_starts_with($url, 'data:')) {
+    $got = req('GET', $url, null, '');
+    $body = (string) $got['body'];
+    $isImage = $got['status'] === 200 && (
+        str_starts_with($body, "\x89PNG") || str_starts_with($body, "\xff\xd8")
+        || str_starts_with($body, 'GIF8') || str_starts_with($body, 'RIFF')
+    );
+    check('нарисованное открывается по ссылке', $isImage,
+        strlen($body) . ' байт, ' . ($got['headers']['content-type'] ?? '?'));
+}
+
 echo "\n" . ($failed === 0 ? "Все проверки пройдены.\n" : "Провалено проверок: {$failed}\n");
 exit($failed === 0 ? 0 : 1);
 
