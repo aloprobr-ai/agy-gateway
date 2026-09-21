@@ -1,0 +1,41 @@
+# Шлюз как служба systemd (Linux) — если не хочется ставить nginx.
+#
+#   sudo cp deploy/agy-gateway.service /etc/systemd/system/
+#   sudo nano /etc/systemd/system/agy-gateway.service     # поправьте User и пути
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now agy-gateway
+#   systemctl status agy-gateway
+#
+# Пользователь должен быть тот же, под которым авторизован agy: CLI берёт
+# вход из его домашнего каталога, и от чужого имени он просто не войдёт.
+
+[Unit]
+Description=Шлюз agy — OpenAI-совместимый API поверх Antigravity CLI
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=agy
+Group=agy
+WorkingDirectory=/srv/agy-gateway
+Environment=PORT=8080
+Environment=LISTEN=127.0.0.1
+ExecStart=/srv/agy-gateway/bin/serve.sh
+Restart=on-failure
+RestartSec=5
+
+# Встроенный сервер слушает только 127.0.0.1, но лишнего ему всё равно не нужно.
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=full
+
+# ProtectHome здесь не ставим: CLI держит в домашнем каталоге и авторизацию,
+# и все беседы, и «только чтение» для дома сломало бы его на первом же запросе.
+
+# Песочнице CLI (bin/agy-jail) нужны свои пространства имён: если запретить
+# их здесь, unshare внутри работать не будет.
+RestrictNamespaces=no
+
+[Install]
+WantedBy=multi-user.target

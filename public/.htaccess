@@ -1,0 +1,25 @@
+# Apache / OpenLiteSpeed: все запросы -> index.php
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+    RewriteBase /
+
+    # Заголовок Authorization должен доходить до PHP (CGI/FastCGI его срезает)
+    RewriteCond %{HTTP:Authorization} .
+    RewriteRule .* - [E=HTTP_AUTHORIZATION:%{HTTP:Authorization}]
+
+    RewriteCond %{REQUEST_FILENAME} !-f
+    RewriteCond %{REQUEST_FILENAME} !-d
+    RewriteRule ^ index.php [QSA,L]
+</IfModule>
+
+<IfModule mod_headers.c>
+    Header always set X-Content-Type-Options "nosniff"
+    Header always set Referrer-Policy "no-referrer"
+</IfModule>
+
+# Не отдавать статику вместо API и не буферизовать SSE
+<IfModule mod_env.c>
+    SetEnv no-gzip 1
+</IfModule>
+
+DirectoryIndex index.php
