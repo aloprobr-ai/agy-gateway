@@ -8,7 +8,9 @@ declare(strict_types=1);
  *   php tests/smoke.php http://127.0.0.1:8080
  *   php tests/smoke.php https://ваш.домен sk-ключ
  *
- * Ключ нужен, только если шлюз его требует (непустой 'api_keys' в config.php).
+ * Ключ нужен, только если шлюз его требует: это видно в /health, поле
+ * auth_required. Требование включают и 'api_keys' в config.php, и ключи,
+ * выданные на странице /keys.
  */
 
 require dirname(__DIR__) . '/src/Compat.php';   // mb_* там, где нет mbstring
@@ -150,22 +152,34 @@ $model = $backend === 'cli' ? 'agy' : 'gemini-2.5-flash';
 $run = bin2hex(random_bytes(3));
 $sess = static fn(string $name): array => ['X-Session-Id: smoke-' . $GLOBALS['run'] . '-' . $name];
 
-// 2. неверный ключ должен отбиваться — но только там, где ключи вообще заведены.
+// 2. /health должен говорить правду про защиту.
+// Проверяем не поле само по себе, а запрос совсем без Authorization: по этому
+// полю клиенты решают, слать ключ или нет, и расхождение здесь тихо ломает их,
+// а не нас. 401 — ключ нужен; любой другой ответ — пускают и без ключа.
+$r = req('GET', $base . '/v1/models', null, '');
+$reallyRequired = $r['status'] === 401;
+$saysRequired = !empty($health['auth_required']);
+check('/health: auth_required совпадает с делом',
+    $reallyRequired === $saysRequired,
+    'health: ' . ($saysRequired ? 'да' : 'нет')
+        . ', запрос без ключа: HTTP ' . $r['status'] . ($reallyRequired ? ' (ключ нужен)' : ' (пускают)'));
+
+// 3. неверный ключ должен отбиваться — но только там, где ключи вообще заведены.
 // На шлюзе для себя 'api_keys' обычно пуст, и ждать 401 значило бы ругать
 // исправную настройку.
-if (!empty($health['auth_required'])) {
+if ($reallyRequired) {
     $r = req('GET', $base . '/v1/models', null, 'sk-definitely-wrong-key');
     check('неверный ключ -> 401', $r['status'] === 401, 'HTTP ' . $r['status']);
 } else {
     echo "     ключи не заведены — проверку чужого ключа пропускаю\n";
 }
 
-// 3. список моделей
+// 4. список моделей
 $r = req('GET', $base . '/v1/models', null, $key);
 $models = json_decode($r['body'], true);
 check('GET /v1/models', $r['status'] === 200 && !empty($models['data']), 'моделей: ' . count($models['data'] ?? []));
 
-// 4. обычный чат
+// 5. обычный чат
 $r = req('POST', $base . '/v1/chat/completions', [
     'model' => $model,
     'messages' => [['role' => 'system', 'content' => 'Отвечай одним словом.'],
@@ -178,7 +192,7 @@ check('POST /v1/chat/completions', $r['status'] === 200 && $text !== '', trim(mb
 check('usage не пустой', (int) ($chat['usage']['total_tokens'] ?? 0) > 0, 'total_tokens = ' . ($chat['usage']['total_tokens'] ?? 0)
     . (!empty($chat['usage']['estimated']) ? ' (оценка, CLI не сообщает расход)' : ''));
 
-// 5. картинка на вход (красный квадрат 8x8 PNG, сгенерирован прямо здесь)
+// 6. картинка на вход (красный квадрат 8x8 PNG, сгенерирован прямо здесь)
 $png = base64_encode(makeRedSquare());
 $r = req('POST', $base . '/v1/chat/completions', [
     'model' => $model,
@@ -195,7 +209,7 @@ $vision = json_decode($r['body'], true);
 $answer = (string) ($vision['choices'][0]['message']['content'] ?? '');
 check('картинка на вход (base64)', $r['status'] === 200 && $answer !== '', trim(mb_substr($answer, 0, 60)));
 
-// 6. стриминг
+// 7. стриминг
 $r = req('POST', $base . '/v1/chat/completions', [
     'model' => $model,
     'messages' => [['role' => 'user', 'content' => 'Посчитай от 1 до 5 через запятую.']],
@@ -205,7 +219,7 @@ $r = req('POST', $base . '/v1/chat/completions', [
 $frames = substr_count($r['body'], 'data: ');
 check('стриминг (SSE)', str_contains($r['body'], 'chat.completion.chunk') && str_contains($r['body'], '[DONE]'), 'кадров: ' . $frames);
 
-// 7. function calling
+// 8. function calling
 $r = req('POST', $base . '/v1/chat/completions', [
     'model' => $model,
     'messages' => [['role' => 'user', 'content' => 'Какая погода в Ростове-на-Дону?']],
@@ -228,7 +242,7 @@ $tools = json_decode($r['body'], true);
 $call = $tools['choices'][0]['message']['tool_calls'][0]['function']['name'] ?? '';
 check('function calling', $r['status'] === 200 && $call === 'get_weather', $call !== '' ? $call : ('HTTP ' . $r['status']));
 
-// 8. JSON-режим (в CLI-режиме параметр не передать, поэтому просим текстом)
+// 9. JSON-режим (в CLI-режиме параметр не передать, поэтому просим текстом)
 if ($backend === 'api') {
     $r = req('POST', $base . '/v1/chat/completions', [
         'model' => $model,

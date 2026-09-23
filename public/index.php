@@ -175,7 +175,9 @@ if ($path === '/health' || $path === '/healthz' || $path === '/v1/health') {
         'php' => PHP_VERSION,
         'backend' => $backend,
         'keys_configured' => count(array_filter($cfg['gemini_keys'] ?? [], fn($k) => is_string($k) && trim($k) !== '' && !str_contains($k, 'ВАШ_КЛЮЧ'))),
-        'auth_required' => !empty($cfg['api_keys']),
+        // Спрашиваем у самого Auth, а не у конфига: показывать надо то, что
+        // произойдёт с запросом, а не то, что написано в одном из полей.
+        'auth_required' => Auth::required($cfg),
     ];
 
     $catalogAt = ModelCatalog::generatedAt();
