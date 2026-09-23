@@ -6,6 +6,9 @@ declare(strict_types=1);
  */
 final class Http
 {
+    /** Поток SSE уже открыт: статус и заголовки ушли, ошибку надо слать кадром. */
+    private static bool $streaming = false;
+
     public static function cors(array $cfg): void
     {
         $origins = $cfg['cors_origins'] ?? '*';
@@ -52,18 +55,24 @@ final class Http
         ?string $code = null,
         ?string $param = null
     ): void {
+        $error = [
+            'message' => $message,
+            'type'    => $type,
+            'param'   => $param,
+            'code'    => $code,
+        ];
+        // Поток уже открыт — голый JSON клиент принял бы за мусор между кадрами
+        // и молча выкинул: человек видел бы оборванный ответ без объяснений.
+        if (self::$streaming) {
+            self::sseSend(['error' => $error]);
+            self::sseDone();
+            exit;
+        }
         if (!headers_sent()) {
             http_response_code($status);
             header('Content-Type: application/json; charset=utf-8');
         }
-        echo json_encode([
-            'error' => [
-                'message' => $message,
-                'type'    => $type,
-                'param'   => $param,
-                'code'    => $code,
-            ],
-        ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        echo json_encode(['error' => $error], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
         exit;
     }
 
@@ -78,6 +87,14 @@ final class Http
             ob_end_flush();
         }
         ob_implicit_flush(true);
+        self::$streaming = true;
+    }
+
+    /** Комментарий SSE: клиенты его пропускают, а соединение не простаивает. */
+    public static function sseComment(string $text = 'ping'): void
+    {
+        echo ': ' . $text . "\n\n";
+        flush();
     }
 
     public static function sseSend(array $payload): void

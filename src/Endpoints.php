@@ -190,11 +190,19 @@ final class Endpoints
 
             // «нарисуй» и «изобрази» говорят сами за себя; остальные глаголы
             // считаются только рядом со словом про картинку.
-            if (preg_match('/(нарису|нарисова|отрису|отрисова|изобраз)/iu', $text)) {
+            // Просьба нарисовать — это пара строк. Длинное сообщение — это текст,
+            // с которым надо что-то сделать, и слова в нём ничего не заказывают:
+            // промт /human, например, сам полон «сделай» и «картина».
+            if (mb_strlen($text) > 600) {
+                return false;
+            }
+            // Слова ищем с начала слова: иначе «арт» находился в «старте»,
+            // а «фото» — в «телефоточке».
+            if (preg_match('/(?<!\p{L})(нарису|нарисова|отрису|отрисова|изобраз)/iu', $text)) {
                 return true;
             }
-            $verb = preg_match('/(созда|сдела|сгенерир|построй|постро|начерти|начерта|сваргань|склепай)/iu', $text);
-            $noun = preg_match('/(картинк|картину|изображен|фотк|фото|рисун|схем|график|логотип|иллюстрац|обо[ий]|арт)/iu', $text);
+            $verb = preg_match('/(?<!\p{L})(созда|сдела|сгенерир|построй|постро|начерти|начерта|сваргань|склепай)/iu', $text);
+            $noun = preg_match('/(?<!\p{L})(картинк|картин[уы]|изображени|фотк|фото|рисун|схем|график|логотип|иллюстрац|обо[ий](?!\p{L})|арт(?!\p{L}))/iu', $text);
             return (bool) ($verb && $noun);
         }
         return false;
@@ -430,6 +438,9 @@ final class Endpoints
             header('X-Conversation-Id: ' . $result['uuid']);
 
             $message = ['role' => 'assistant', 'content' => $parsed['text'] === '' ? null : $parsed['text']];
+            if (($result['thinking'] ?? '') !== '') {
+                $message['reasoning_content'] = $result['thinking'];
+            }
             if ($parsed['tool_calls'] !== []) {
                 $message['tool_calls'] = $parsed['tool_calls'];
             }
@@ -475,6 +486,19 @@ final class Endpoints
         $decided = false; // true — точно обычный текст, можно стримить
         $sawTools = false;
         $streamed = '';   // всё, что реально ушло клиенту — для сверки с финалом
+
+        // Агент бывает занят минутами: думает, читает, рисует. Всё это время
+        // клиент не получал ни байта — ни заголовков, ни кадров, и отличить
+        // работу от зависания не мог. Раз в 15 секунд тишины открываем поток,
+        // если ещё не открыт, и шлём комментарий SSE: клиенты его пропускают.
+        $agy->onIdle = static function () use (&$opened, $frame): void {
+            if (!$opened) {
+                Http::sseStart();
+                $opened = true;
+                Http::sseSend($frame(['role' => 'assistant', 'content' => ''], null));
+            }
+            Http::sseComment();
+        };
 
         $result = $agy->ask($sessionId, $prompt, $cliModel, $sentCount, function (string $delta) use (&$opened, &$buffered, &$decided, &$streamed, $frame, $req) {
             $buffered .= $delta;

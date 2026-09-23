@@ -126,6 +126,12 @@ if (str_contains($prompt, 'tool_calls') && preg_match('/погод/iu', $prompt)
     }
 }
 
+// «пауза N» — помолчать N секунд, как настоящий агент, когда думает долго.
+// Так проверяется, что шлюз в это время шлёт клиенту «я жив», а не молчит.
+if (preg_match('/пауза (\d+)/u', $prompt, $m)) {
+    sleep(min(600, (int) $m[1]));
+}
+
 // Служебный шаг перед ответом — шлюз показывает такие в «Размышлениях».
 $emit(['event' => 'step_update', 'step_update' => ['step_type' => 'checkpoint', 'state' => 'DONE']]);
 
@@ -139,6 +145,25 @@ foreach ($chunks as $chunk) {
         'text_delta' => $chunk,
     ]]);
     usleep(40_000);
+}
+
+// Настоящий CLI пишет журнал беседы, и в шаге ответа модели там лежит её ход
+// мысли — шлюз показывает его клиенту. Заглушка делает так же, но только если
+// ей сказали куда (FAKE_AGY_BRAIN в cli.env): чужой каталог CLI не трогаем.
+$brain = (string) (getenv('FAKE_AGY_BRAIN') ?: '');
+if ($brain !== '') {
+    $logs = $brain . '/' . $conversation . '/.system_generated/logs';
+    @mkdir($logs, 0777, true);
+    $journal = $logs . '/transcript_full.jsonl';
+    $steps = is_file($journal) ? count(file($journal)) : 0;
+    file_put_contents($journal, json_encode([
+        'step_index' => $steps,
+        'source' => 'MODEL',
+        'type' => 'PLANNER_RESPONSE',
+        'status' => 'DONE',
+        'thinking' => "Thinking about a prompt of " . strlen($prompt) . " bytes.\n\n\n" . $answer . "\n\n\n",
+        'content' => $answer,
+    ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) . "\n", FILE_APPEND);
 }
 
 $emit(['event' => 'result', 'result' => [

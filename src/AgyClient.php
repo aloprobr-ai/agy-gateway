@@ -11,6 +11,12 @@ declare(strict_types=1);
  */
 final class AgyClient
 {
+    /**
+     * Зовётся раз в 15 секунд, пока CLI молчит. Стриминг шлёт в него «я жив»:
+     * агент бывает занят минутами, и без этого соединение выглядит мёртвым.
+     */
+    public ?\Closure $onIdle = null;
+
     private array $cfg;
     private array $cli;
     private string $stateFile;
@@ -529,10 +535,111 @@ final class AgyClient
         return 'Работаю'; // незнакомый инструмент: лучше молча, чем его именем
     }
 
+    private function transcriptPath(string $uuid): string
+    {
+        return rtrim($this->brainDir(), '/\\') . '/' . $uuid . '/.system_generated/logs/transcript_full.jsonl';
+    }
+
+    private function transcriptSize(?string $uuid): int
+    {
+        if ($uuid === null || $uuid === '') {
+            return 0;
+        }
+        clearstatcache(true, $this->transcriptPath($uuid));
+        return (int) @filesize($this->transcriptPath($uuid));
+    }
+
+    /**
+     * Настоящий ход мысли модели.
+     *
+     * В поток stream-json CLI его не отдаёт — там только число потраченных на
+     * размышление токенов. Зато в журнал беседы (transcript_full.jsonl) каждый
+     * шаг ответа модели ложится вместе с полем thinking: сжатым пересказом
+     * того, о чём она думала. Шаг пишется, когда он закончен, поэтому мысли
+     * приходят по шагам, а не по словам: у простого ответа — в конце, у работы
+     * с инструментами — перед каждым действием.
+     *
+     * Читаем с того места, где остановились в прошлый раз.
+     *
+     * @return string[] новые мысли
+     */
+    private function pollThoughts(?string $uuid, array &$st): array
+    {
+        if ($uuid === null || $uuid === '') {
+            return [];
+        }
+        if ($st['uuid'] !== $uuid) {
+            // CLI начал новую беседу вместо продолжения — её журнал читаем с начала
+            $st = ['uuid' => $uuid, 'pos' => 0, 'buf' => '', 'seen' => []];
+        }
+        $file = $this->transcriptPath($uuid);
+        clearstatcache(true, $file);
+        $size = (int) @filesize($file);
+        if ($size <= $st['pos']) {
+            return [];
+        }
+        $fh = @fopen($file, 'rb');
+        if ($fh === false) {
+            return [];
+        }
+        fseek($fh, $st['pos']);
+        $data = (string) stream_get_contents($fh, $size - $st['pos']);
+        fclose($fh);
+        $st['pos'] += strlen($data);
+        $st['buf'] .= $data;
+
+        $out = [];
+        while (($p = strpos($st['buf'], "\n")) !== false) {
+            $line = substr($st['buf'], 0, $p);
+            $st['buf'] = substr($st['buf'], $p + 1);
+            $step = json_decode($line, true);
+            if (!is_array($step) || ($step['type'] ?? '') !== 'PLANNER_RESPONSE') {
+                continue;
+            }
+            $idx = (int) ($step['step_index'] ?? -1);
+            if (isset($st['seen'][$idx])) {
+                continue;
+            }
+            $st['seen'][$idx] = true;
+            $thought = self::tidyThought((string) ($step['thinking'] ?? ''));
+            if ($thought !== '') {
+                $out[] = $thought;
+            }
+        }
+        return $out;
+    }
+
+    /**
+     * Мысли модели — блоками через тройной перевод строки, обычно с
+     * заголовком «**Что делаю**». Изредка блок приходит JSON-ом с полями
+     * header и summary — такой разворачиваем в тот же вид.
+     */
+    private static function tidyThought(string $raw): string
+    {
+        $blocks = [];
+        foreach (preg_split("/\n{3,}/", $raw) ?: [] as $block) {
+            $block = trim($block);
+            if (preg_match('/^```(?:json)?\s*(\{.*\})\s*```$/s', $block, $m)) {
+                $j = json_decode($m[1], true);
+                if (is_array($j) && isset($j['header'])) {
+                    $block = trim((string) $j['header'] . "\n" . (string) ($j['summary'] ?? ''));
+                }
+            }
+            if ($block !== '') {
+                $blocks[] = $block;
+            }
+        }
+        return implode("\n\n", $blocks);
+    }
+
     private function readEventStream(string $sessionId, ?string $knownUuid, int $sentCount, ?callable $onDelta, ?callable $onStep = null): array
     {
+        // timeout — сколько ждать тишины, а не весь ответ: длинный ответ,
+        // который честно печатается, обрывать нельзя. Общий потолок — max_time.
         $timeout = (float) ($this->cli['timeout'] ?? 180);
-        $deadline = microtime(true) + $timeout;
+        $hardStop = microtime(true) + (float) ($this->cli['max_time'] ?? 840);
+        $deadline = min($hardStop, microtime(true) + $timeout);
+        $lastBeat = microtime(true);
 
         $uuid = $knownUuid;
         $buffer = '';
@@ -543,7 +650,28 @@ final class AgyClient
         $exited = false;
         $sessionSaved = false;
 
+        // Мысли модели читаем из журнала беседы (см. pollThoughts). У
+        // продолженной беседы там уже лежат прошлые ходы — начинаем с конца.
+        $thoughts = ['uuid' => $knownUuid, 'pos' => $this->transcriptSize($knownUuid),
+                     'buf' => '', 'seen' => []];
+        $thoughtLog = [];
+        $thoughtsAt = 0.0;
+        $emitThoughts = function () use (&$thoughts, &$thoughtLog, &$uuid, $onStep): int {
+            $found = $this->pollThoughts($uuid, $thoughts);
+            foreach ($found as $thought) {
+                $thoughtLog[] = $thought;
+                if ($onStep !== null) {
+                    $onStep($thought . "\n\n");
+                }
+            }
+            return count($found);
+        };
+
         while (microtime(true) < $deadline) {
+            if (microtime(true) >= $thoughtsAt) {
+                $thoughtsAt = microtime(true) + 0.5;
+                $emitThoughts();
+            }
             $chunk = $this->readChunk();
 
             if ($chunk === '') {
@@ -553,11 +681,16 @@ final class AgyClient
                 if (!$this->processRunning()) {
                     $exited = true; // остаток вывода добираем на следующем витке
                 }
+                if ($this->onIdle !== null && microtime(true) - $lastBeat >= 15) {
+                    $lastBeat = microtime(true);
+                    ($this->onIdle)();
+                }
                 usleep(50_000);
                 continue;
             }
 
             $buffer .= $chunk;
+            $deadline = min($hardStop, microtime(true) + $timeout);
 
             while (($pos = strpos($buffer, "\n")) !== false) {
                 $line = trim(substr($buffer, 0, $pos));
@@ -632,6 +765,15 @@ final class AgyClient
             }
         }
 
+        // Шаг с последними мыслями CLI пишет в журнал почти одновременно с
+        // концом потока — даём ему секунду, если этот шаг ещё не попался.
+        $graceUntil = microtime(true) + 1.0;
+        $emitThoughts();
+        while ($thoughts['seen'] === [] && $uuid && microtime(true) < $graceUntil) {
+            usleep(100_000);
+            $emitThoughts();
+        }
+
         if ($uuid === null || $uuid === '') {
             $this->cleanup();
             // Чаще всего одно из двух: CLI не авторизован под этим
@@ -656,7 +798,8 @@ final class AgyClient
             Http::error(502, 'CLI returned status ' . ($status ?: 'UNKNOWN') . ' without an answer — see logs/agy-stderr.log.', 'api_error', 'cli_failed');
         }
 
-        return ['text' => trim($text), 'uuid' => $uuid, 'usage' => $usage];
+        return ['text' => trim($text), 'uuid' => $uuid, 'usage' => $usage,
+                'thinking' => implode("\n\n", $thoughtLog)];
     }
 
     /** Расход токенов CLI -> формат usage OpenAI. */
