@@ -27,6 +27,10 @@ if [ ! -f "$root/config.php" ]; then
     echo "Создан config.php из образца — впишите туда свой ключ."
 fi
 
+# Пароль страницы /keys: если его ещё нет, придумываем и показываем один раз.
+# Не вышло записать — шлюз всё равно поднимаем, выдачу ключей можно наладить потом.
+php "$root/bin/admin-token.php" --quiet || true
+
 missing=""
 for ext in curl mbstring openssl; do
     php -r "exit(extension_loaded('$ext') ? 0 : 1);" || missing="$missing $ext"

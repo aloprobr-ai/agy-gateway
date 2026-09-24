@@ -316,6 +316,12 @@ final class Keys
         return self::isAdminIp($cfg) && self::tokenOk($cfg);
     }
 
+    /** Задан ли токен управления вообще: пустой не подходит ни к чему. */
+    public static function hasToken(array $cfg): bool
+    {
+        return (string) ($cfg['admin']['token'] ?? '') !== '';
+    }
+
     /** Отдельно от адреса — чтобы сказать человеку, что именно не сошлось. */
     public static function tokenOk(array $cfg): bool
     {

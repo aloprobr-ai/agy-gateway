@@ -200,6 +200,13 @@ if (Auth::required($cfg)) {
         "впишите ключ в 'api_keys' в config.php или выдайте его на странице /keys");
 }
 
+// Пустой admin.ips выключает /keys совсем — тогда и токен не нужен.
+if ((array) ($cfg['admin']['ips'] ?? []) !== []) {
+    $say('токен управления для /keys', Keys::hasToken($cfg) ? true : null,
+        Keys::hasToken($cfg) ? 'задан' : 'не задан, выдавать ключи на /keys нельзя',
+        'php bin/admin-token.php');
+}
+
 // -------------------------------------------------------------- каталоги
 foreach (['storage', 'logs'] as $d) {
     $path = Platform::join($root, $d);

@@ -98,6 +98,12 @@ $when = static function (?string $iso): string {
     <p class="empty">Управление ключами доступно только с доверенного адреса.</p>
   <?php else: ?>
 
+    <?php if (!Keys::hasToken($cfg)): ?>
+      <div class="note err">Токен управления ещё не задан, поэтому выдавать и отзывать ключи нельзя.
+        Он появляется при первом запуске <code>bin/serve.sh</code> или <code>bin/serve.ps1</code>,
+        либо выполните <code>php bin/admin-token.php</code>.</div>
+    <?php endif; ?>
+
     <h2 class="section">Выданные здесь</h2>
     <?php if (!$rows): ?>
       <p class="empty">Пока ни одного. Форма выдачи внизу страницы.</p>
@@ -176,8 +182,9 @@ $when = static function (?string $iso): string {
       <label>Токен управления
         <input type="password" name="token" required autocomplete="off">
         <span class="hint"><b>Это не тот ключ, который мы создаём.</b> Это пароль самой страницы —
-          строка <code>admin.token</code> из <code>config.php</code>, та же, которой подписываются
-          выпуски на <a href="/archive">/archive</a>.</span>
+          строка <code>admin.token</code> из <code>config.php</code>; если её придумал шлюз, она
+          начинается с <code>tk-</code>. Показать: <code>php bin/admin-token.php --show</code>.
+          У выпусков на <a href="/archive">/archive</a> токен свой — <code>releases.publish_token</code>.</span>
       </label>
       <p><button type="submit" class="primary">Создать</button></p>
     </form>

@@ -32,6 +32,10 @@ if (-not (Test-Path $config)) {
     Write-Host "Создан config.php из образца — впишите туда свой ключ." -ForegroundColor Yellow
 }
 
+# --- пароль страницы /keys: если его ещё нет, придумываем и показываем один раз.
+# Не вышло записать — шлюз всё равно поднимаем, выдачу ключей можно наладить потом.
+& $php (Join-Path $root "bin\admin-token.php") --quiet
+
 # --- расширения, без которых часть шлюза работать не будет
 $missing = @()
 foreach ($ext in @("curl", "mbstring", "openssl")) {

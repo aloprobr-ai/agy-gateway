@@ -122,9 +122,13 @@ if ($path === '/keys' || str_starts_with($path, '/keys/')) {
     if ($method === 'POST') {
         if (!Keys::isAdminIp($cfg)) {
             $notice = ['ok' => false, 'text' => 'Управлять ключами можно только с доверенного адреса.'];
+        } elseif (!Keys::hasToken($cfg)) {
+            $notice = ['ok' => false, 'text' => 'Токен управления ещё не задан, поэтому выдавать ключи нельзя. '
+                . 'Он появляется при первом запуске bin/serve.sh или bin/serve.ps1, либо выполните php bin/admin-token.php.'];
         } elseif (!Keys::tokenOk($cfg)) {
             $notice = ['ok' => false, 'text' => 'Токен управления не подошёл. Это не ключ, который мы выдаём, '
-                . 'а пароль страницы — строка admin.token из config.php, та же, что для выкладывания обновлений.'];
+                . 'а пароль страницы — строка admin.token из config.php (tk-..., если её придумал шлюз). '
+                . 'Показать её: php bin/admin-token.php --show.'];
         } elseif ($path === '/keys/create') {
             $res = Keys::create((string) ($_POST['label'] ?? ''), (string) ($_POST['custom'] ?? ''), $cfg);
             if (!empty($res['ok'])) {

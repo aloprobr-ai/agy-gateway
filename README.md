@@ -58,6 +58,17 @@ php bin/doctor.php
 Адрес для программ-клиентов — `http://127.0.0.1:8080/v1`. Ключ на своей машине
 не нужен: пока `api_keys` в `config.php` пуст, шлюз пускает без ключа.
 
+При первом запуске `serve.sh` / `serve.ps1` придумывает **токен управления**
+вида `tk-…`, вписывает его в `admin.token` и показывает в консоли. Это пароль
+страницы `/keys`, где выдают и отзывают клиентские ключи, а не ключ к API.
+Без этих скриптов (nginx, PHP-FPM) токен заводится командой:
+
+```sh
+php bin/admin-token.php           # придумать и вписать, если его ещё нет
+php bin/admin-token.php --show    # показать текущий
+php bin/admin-token.php --new     # заменить: старый перестанет подходить
+```
+
 ---
 
 ## Что умеет
@@ -119,6 +130,7 @@ agy-gateway/
 │   ├── install-task.ps1    <- автозапуск вместе с входом в Windows
 │   ├── agy-jail            <- песочница для CLI (Linux)
 │   ├── doctor.php          <- проверка обстановки
+│   ├── admin-token.php     <- токен управления для /keys
 │   ├── update.php          <- обновление самого шлюза из GitHub
 │   └── update_models.php   <- обновление списка моделей
 ├── deploy/                 <- примеры для nginx, systemd, aaPanel
@@ -438,6 +450,7 @@ AGY_UPDATE_TOKEN=ghp_... php bin/update.php
 ```sh
 sudo -u www -H agy          # войти под пользователем шлюза
 sudo -u www php bin/doctor.php
+sudo -u www php bin/admin-token.php   # токен для /keys — от владельца config.php
 ```
 
 ---
