@@ -86,9 +86,14 @@ function fake_png(int $r, int $g, int $b): string
         . $chunk('IEND', '');
 }
 
-/** Событие в stdout: одна строка — один JSON, как у настоящего CLI. */
+/**
+ * Событие в stdout: одна строка — один JSON, как у настоящего CLI.
+ *
+ * Настоящий agy написан на Go, и его JSON заменяет каждый байт неполной
+ * UTF-8 последовательности на U+FFFD. JSON_INVALID_UTF8_SUBSTITUTE делает то же.
+ */
 $emit = static function (array $event): void {
-    echo json_encode($event, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES), "\n";
+    echo json_encode($event, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE), "\n";
     flush();
 };
 
@@ -96,11 +101,18 @@ $emit(['event' => 'init', 'init' => ['conversation_id' => $conversation]]);
 
 // Что отвечаем.
 $madeFile = null;
+$byteChunks = false;
 // Признак того, что шлюз перечислил инструменты, — упоминание формата ответа
 // tool_calls: за него и цепляемся. Сам заголовок списка переписывали уже
 // дважды, а этот кусок менять нельзя, его разбирает шлюз.
 if (str_contains($prompt, 'tool_calls') && preg_match('/погод/iu', $prompt)) {
     $answer = '{"tool_calls":[{"name":"get_weather","args":{"city":"Ростов-на-Дону"}}]}';
+} elseif (str_contains($prompt, 'иллюстрац')) {
+    // Как настоящий: модель отдаёт текст кусками байтов, и граница куска
+    // попадает посреди буквы. Поле response в конце при этом целое.
+    $answer = 'Книжная иллюстрация — это рисунок, который объясняет текст. '
+        . 'Хорошая иллюстрация в детской книге живёт своей жизнью: ёжик, щука, эхо.';
+    $byteChunks = true;
 } else {
     $answer = 'Ответ заглушки CLI'
         . ($model !== '' ? " (модель: {$model})" : '')
@@ -156,7 +168,10 @@ $emit(['event' => 'step_update', 'step_update' => ['step_type' => 'checkpoint', 
 
 // Текст появляется по кускам, как при настоящей генерации: так проверяется,
 // что шлюз отдаёт потоком, а не копит ответ целиком.
-$chunks = preg_split('/(?<=[\s.,!])/u', $answer, -1, PREG_SPLIT_NO_EMPTY) ?: [$answer];
+// Куски по 7 байт: нечётная длина при двухбайтовой кириллице режет буквы то и дело.
+$chunks = $byteChunks
+    ? str_split($answer, 7)
+    : (preg_split('/(?<=[\s.,!])/u', $answer, -1, PREG_SPLIT_NO_EMPTY) ?: [$answer]);
 foreach ($chunks as $chunk) {
     $emit(['event' => 'step_update', 'step_update' => [
         'step_type' => 'agent_response',

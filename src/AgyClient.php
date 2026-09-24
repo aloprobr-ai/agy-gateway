@@ -717,6 +717,20 @@ final class AgyClient
         $uuid = $knownUuid;
         $buffer = '';
         $text = '';
+        // Модель отдаёт текст кусками байтов, и граница куска бывает посреди
+        // буквы. CLI (он на Go) кодирует каждый кусок в JSON отдельно и
+        // половинки буквы заменяет на U+FFFD: «иллюстрация» приходит как
+        // «ил» + U+FFFD и U+FFFD + «юстрация». Восстановить букву по дельтам
+        // нельзя — байты уже потеряны. Поэтому с первого U+FFFD текст
+        // придерживаем, а в конце досылаем из поля response: оно целое.
+        $sent = '';   // что ушло в $onDelta
+        $held = '';   // что придержали после U+FFFD
+        $emit = static function (string $piece) use (&$sent, $onDelta): void {
+            if ($piece !== '' && $onDelta !== null) {
+                $onDelta($piece);
+                $sent .= $piece;
+            }
+        };
         $usage = [];
         $status = null;
         $finished = false;
@@ -811,8 +825,13 @@ final class AgyClient
                             break;
                         }
                         $text .= $delta;
-                        if ($onDelta !== null) {
-                            $onDelta($delta);
+                        if ($held === '' && ($bad = strpos($delta, "\u{FFFD}")) !== false) {
+                            $emit(substr($delta, 0, $bad));
+                            $held = substr($delta, $bad);
+                        } elseif ($held !== '') {
+                            $held .= $delta;
+                        } else {
+                            $emit($delta);
                         }
                         break;
 
@@ -823,20 +842,32 @@ final class AgyClient
                         $uuid = (string) ($res['conversation_id'] ?? $uuid);
                         $final = (string) ($res['response'] ?? '');
 
-                        // Финальный ответ — источник истины: дошлём то, что не попало в дельты.
-                        if ($final !== '' && $final !== $text) {
-                            if ($onDelta !== null && $text !== '' && str_starts_with($final, $text)) {
-                                $onDelta(substr($final, strlen($text)));
-                            } elseif ($onDelta !== null && $text === '') {
-                                $onDelta($final);
-                            }
+                        // Финальный ответ — источник истины: дошлём то, что не
+                        // попало в дельты или было придержано из-за битых букв.
+                        // $sent — целые символы, так что и хвост режется по границе символа.
+                        if ($final !== '' && str_starts_with($final, $sent)) {
+                            $emit(substr($final, strlen($sent)));
+                            $held = '';
+                        }
+                        if ($final !== '') {
                             $text = $final;
                         }
                         $finished = true;
                         break;
                 }
             }
+
+            // Пока текст придержан, клиенту ничего не уходит, хотя CLI пишет
+            // вовсю — «я жив» нужен и тут, иначе клиент решит, что ответ завис.
+            if ($held !== '' && $this->onIdle !== null && microtime(true) - $lastBeat >= 15) {
+                $lastBeat = microtime(true);
+                ($this->onIdle)();
+            }
         }
+
+        // Финала не было или он разошёлся с потоком — отдаём как есть,
+        // пусть с битой буквой: это лучше, чем потерять конец ответа.
+        $emit($held);
 
         // Шаг с последними мыслями CLI пишет в журнал почти одновременно с
         // концом потока — даём ему секунду, если этот шаг ещё не попался.

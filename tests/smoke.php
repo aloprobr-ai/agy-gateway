@@ -258,6 +258,41 @@ $r = req('POST', $base . '/v1/chat/completions', [
 $frames = substr_count($r['body'], 'data: ');
 check('стриминг (SSE)', str_contains($r['body'], 'chat.completion.chunk') && str_contains($r['body'], '[DONE]'), 'кадров: ' . $frames);
 
+// 7а. стриминг кириллицы: CLI режет буквы между дельтами и подставляет U+FFFD
+// («ил��юстрация»), шлюз обязан отдать клиенту целый текст. Заглушка CLI на
+// слово «иллюстрац» отвечает кусками по 7 байт — буквы рвутся на каждом шагу.
+$r = req('POST', $base . '/v1/chat/completions', [
+    'model' => $model,
+    'messages' => [['role' => 'user', 'content' => 'Напиши два предложения про книжную иллюстрацию.']],
+    'stream' => true,
+], $key, true, $sess('utf8'));
+$streamedText = '';
+$badDeltas = 0;
+$fullText = null;
+foreach (explode("\n", $r['body']) as $line) {
+    $j = str_starts_with($line, 'data: {') ? json_decode(substr($line, 6), true) : null;
+    if (!is_array($j)) {
+        continue;
+    }
+    $piece = $j['choices'][0]['delta']['content'] ?? null;
+    if (is_string($piece)) {
+        $streamedText .= $piece;
+        if (preg_match('//u', $piece) !== 1 || str_contains($piece, "\u{FFFD}")) {   // //u не проходит на битом UTF-8
+            $badDeltas++;
+        }
+    }
+    $fullText ??= $j['agy_full_text'] ?? null;
+}
+$expected = 'Книжная иллюстрация — это рисунок, который объясняет текст. '
+    . 'Хорошая иллюстрация в детской книге живёт своей жизнью: ёжик, щука, эхо.';
+$fromFake = str_starts_with($streamedText, 'Книжная');
+check('стриминг кириллицы без битых букв',
+    $streamedText !== '' && $badDeltas === 0 && $fullText === null
+        && (!$fromFake || $streamedText === $expected),
+    $badDeltas > 0 ? "битых дельт: {$badDeltas}"
+        : ($fullText !== null ? 'поток разошёлся с ответом (agy_full_text)'
+        : trim(mb_substr($streamedText, 0, 60))));
+
 // 8. function calling
 $r = req('POST', $base . '/v1/chat/completions', [
     'model' => $model,
