@@ -37,6 +37,15 @@ final class AgyClient
      */
     private ?string $rules = null;
 
+    /**
+     * Вырезать промпт agy в этом запросе (AgyPrompt::stripFor). Сам промпт
+     * вырезает перехватчик deploy/agy-mitm, увидев STRIP_MARKER в правилах.
+     */
+    public bool $stripPrompt = false;
+
+    /** Пометка для перехватчика; модели она не достаётся — он её вычищает. */
+    public const STRIP_MARKER = '<!-- agy-gateway: strip-agy-prompt -->';
+
     /** Имя файла правил, которое agy ищет в рабочей области. */
     private const RULES_FILE = 'GEMINI.md';
     /** agy режет файл правил на 24 000 байт; берём с запасом на нашу шапку. */
@@ -211,7 +220,7 @@ final class AgyClient
             return false;
         }
         $file = $this->workDir . '/' . self::RULES_FILE;
-        if ($this->rules === null) {
+        if ($this->rules === null && !$this->stripPrompt) {
             // Без --add-dir agy файл не прочтёт, но и лежать с чужим прошлым
             // промптом ему незачем.
             if (is_file($file)) {
@@ -219,9 +228,17 @@ final class AgyClient
             }
             return false;
         }
-        $text = "# Инструкция приложения\n\n"
-            . "Это чат через API. Папка беседы служебная: не просматривай её без просьбы.\n\n"
-            . $this->rules . "\n";
+        $text = '';
+        if ($this->rules !== null) {
+            $text = "# Инструкция приложения\n\n"
+                . "Это чат через API. Папка беседы служебная: не просматривай её без просьбы.\n\n"
+                . $this->rules . "\n";
+        }
+        if ($this->stripPrompt) {
+            // Правила agy кладёт в свой системный промпт — там перехватчик
+            // пометку и найдёт. Без системного сообщения файл из одной пометки.
+            $text .= ($text !== '' ? "\n" : '') . self::STRIP_MARKER . "\n";
+        }
         return @file_put_contents($file, $text) !== false;
     }
 
@@ -279,7 +296,8 @@ final class AgyClient
                     continue;
                 }
                 // Файл правил пишет сам шлюз перед ходом — это не результат модели.
-                if ($this->rules !== null && $file === $this->workDir . '/' . self::RULES_FILE) {
+                // В том числе когда в нём одна пометка для перехватчика.
+                if (($this->rules !== null || $this->stripPrompt) && $file === $this->workDir . '/' . self::RULES_FILE) {
                     continue;
                 }
                 // Один и тот же снимок CLI кладёт и в рабочий каталог, и в scratch,

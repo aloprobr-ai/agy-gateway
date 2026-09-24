@@ -385,6 +385,7 @@ final class Endpoints
         $cliModel = self::cliModel($cfg, $req['model'] ?? null);
 
         $agy = new AgyClient($cfg);
+        $agy->stripPrompt = AgyPrompt::stripFor($cfg, $keyLabel);
         $sessionId = self::sessionId($cfg, $req, $keyLabel);
         $info = $agy->session($sessionId);
 
@@ -665,6 +666,7 @@ final class Endpoints
 
         if (self::backendFor($cfg, $chatReq) === 'cli') {
             $agy = new AgyClient($cfg);
+            $agy->stripPrompt = AgyPrompt::stripFor($cfg, $keyLabel);
             $sessionId = self::sessionId($cfg, $chatReq, $keyLabel);
             $info = $agy->session($sessionId);
             if ($info['uuid'] !== null && count($chatReq['messages']) <= $info['sent']) {
@@ -766,7 +768,7 @@ final class Endpoints
      * его собственный инструмент рисования. Бэкенд выбирается как везде
      * (backendFor), поэтому префикс "api/" или "cli/" в модели работает и тут.
      */
-    public static function images(array $cfg, array $req): void
+    public static function images(array $cfg, array $req, string $keyLabel = 'anonymous'): void
     {
         $backend = self::backendFor($cfg, $req);
 
@@ -776,7 +778,7 @@ final class Endpoints
         }
 
         if ($backend === 'cli') {
-            self::imagesViaCli($cfg, $req, $prompt);
+            self::imagesViaCli($cfg, $req, $prompt, $keyLabel);
             return;
         }
         // Сюда попадают, только если явно выбран бэкенд по ключам. Общее
@@ -822,13 +824,14 @@ final class Endpoints
      * состояния, и тянуть предыдущий разговор в заказ на картинку значило бы
      * подмешивать в него чужой контекст.
      */
-    private static function imagesViaCli(array $cfg, array $req, string $prompt): void
+    private static function imagesViaCli(array $cfg, array $req, string $prompt, string $keyLabel = 'anonymous'): void
     {
         $n = max(1, min(4, (int) ($req['n'] ?? 1)));
         $format = (string) ($req['response_format'] ?? 'b64_json');
         $model = trim((string) ($cfg['cli']['default_model'] ?? '')) ?: null;
 
         $agy = new AgyClient($cfg);
+        $agy->stripPrompt = AgyPrompt::stripFor($cfg, $keyLabel);
         $session = 'img-' . bin2hex(random_bytes(8));
         $paths = [];
 

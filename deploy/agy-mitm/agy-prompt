@@ -1,32 +1,48 @@
 #!/bin/sh
-# Общий переключатель промпта agy для всех запросов шлюза.
+# Общий выключатель промпта agy — значение «для всех ключей» в шлюзе
+# (storage/agy-prompt.json, см. src/AgyPrompt.php). Свои значения у
+# отдельных ключей главнее; их меняют через /v1/agy-prompt или /agy в
+# Gemini Desktop.
 #   agy-prompt        — что сейчас
 #   agy-prompt on     — промпт agy идёт как есть (по умолчанию)
-#   agy-prompt off    — вырезать промпт agy (strip.py)
+#   agy-prompt off    — вырезать промпт agy
 # Действует со следующего запроса, перезапуск не нужен.
-CONF=${CONF:-/opt/agy-mitm/strip.json}
+UNIT=/etc/systemd/system/agy-mitm.service
+if [ -z "$GATEWAY" ] && [ -f "$UNIT" ]; then
+    GATEWAY=$(sed -nE 's/^Environment=GATEWAY=(.*)$/\1/p' "$UNIT" | tail -1)
+fi
+GATEWAY=${GATEWAY:-/var/www/agy-gateway}
 
 case "$1" in
-    on)  VALUE=False ;;
-    off) VALUE=True ;;
-    "")  VALUE= ;;
-    *)   echo "использование: agy-prompt [on|off]" >&2; exit 2 ;;
+    on|off|"") ;;
+    *) echo "использование: agy-prompt [on|off]" >&2; exit 2 ;;
 esac
 
-python3 - "$CONF" "$VALUE" <<'PY'
+python3 - "$GATEWAY/storage/agy-prompt.json" "$1" <<'PY'
 import json, os, sys, tempfile
 path, value = sys.argv[1], sys.argv[2]
-with open(path, encoding="utf-8") as f:
-    c = json.load(f)
+try:
+    with open(path, encoding="utf-8") as f:
+        state = json.load(f)
+except FileNotFoundError:
+    state = {}
+state.setdefault("all", "on")
+state.setdefault("keys", {})
 if value:
-    c["strip_prompt"] = value == "True"
-    # Через временный файл: strip.py читает конфиг на каждый запрос
-    # и не должен застать его недописанным.
-    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path))
+    state["all"] = value
+    folder = os.path.dirname(path)
+    fd, tmp = tempfile.mkstemp(dir=folder)
     with os.fdopen(fd, "w", encoding="utf-8") as f:
-        json.dump(c, f, ensure_ascii=False, indent=2)
+        json.dump(state, f, ensure_ascii=False, indent=4)
         f.write("\n")
-    os.chmod(tmp, 0o644)
+    # Файл читает и пишет шлюз из-под своего пользователя — отдаём ему.
+    st = os.stat(folder)
+    os.chown(tmp, st.st_uid, st.st_gid)
+    os.chmod(tmp, 0o664)
     os.replace(tmp, path)
-print("промпт agy: " + ("вырезается (off)" if c.get("strip_prompt") is True else "как есть (on)"))
+own = state["keys"]
+print("промпт agy для всех: " + ("как есть (on)" if state["all"] != "off" else "вырезается (off)"))
+if own:
+    print("своё значение у ключей: %d (off: %d, on: %d)" % (
+        len(own), sum(v == "off" for v in own.values()), sum(v == "on" for v in own.values())))
 PY

@@ -12,9 +12,10 @@ agy перед каждым ходом шлёт в streamGenerateContent сво�
 * текст пользователя — без обёртки <USER_REQUEST> и служебных вставок
   про время и выбор модели.
 
-Всё это — только при "strip_prompt": true (команда `agy-prompt off`); по
-умолчанию промпт agy идёт как есть. Телеметрия agy глушится независимо от
-этого переключателя (block_analytics).
+Всё это — только когда шлюз пометил запрос (выключатель AgyPrompt: общий
+и по ключам, команда agy-prompt, /agy в Gemini Desktop) или стоит
+"strip_prompt": true; по умолчанию промпт agy идёт как есть. Телеметрия agy
+глушится независимо от этого (block_analytics).
 
 Служебные вызовы модели (заголовок беседы и т. п.) промпта агента не несут
 и проходят как есть. Настройки читаются из strip.json на каждый запрос —
@@ -31,6 +32,9 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 CONF = os.path.join(HERE, "strip.json")
 LOG = os.path.join(HERE, "strip.log")
 DUMP = os.path.join(HERE, "dump")
+
+# Пометка шлюза «вырезать» (AgyClient::STRIP_MARKER).
+MARKER = "<!-- agy-gateway: strip-agy-prompt -->"
 
 RULE_RE = re.compile(r"<RULE\[[^\]]*\]>\n?(.*?)\n?</RULE\[[^\]]*\]>", re.S)
 REQ_RE = re.compile(r"<USER_REQUEST>\n?(.*?)\n?</USER_REQUEST>", re.S)
@@ -146,9 +150,11 @@ def request(flow: http.HTTPFlow):
 
     if c.get("dump"):
         dump(flow, "in.json", flow.request.content)
-    # Общий переключатель (команда agy-prompt). По умолчанию промпт agy
-    # остаётся как есть — вырезаем, только если явно сказано.
-    if c.get("strip_prompt") is not True:
+    # Решает шлюз — для каждого ключа свой выключатель (AgyPrompt, команда
+    # agy-prompt, /agy в Gemini Desktop) — и оставляет пометку в GEMINI.md,
+    # а agy кладёт её в свой промпт. strip_prompt — принудительно для всего
+    # трафика agy, даже не от шлюза. Иначе промпт agy идёт как есть.
+    if MARKER not in sys_old and c.get("strip_prompt") is not True:
         return
     before = len(flow.request.content or b"")
 
@@ -158,7 +164,8 @@ def request(flow: http.HTTPFlow):
     # Своя строка вместо промпта агента — только при инструментах: без неё
     # модель изредка кончает ход пустым ответом после вызова инструмента,
     # и agy ждёт продолжения до таймаута.
-    rules = [r.strip() for r in RULE_RE.findall(sys_old) if r.strip()]
+    rules = [r.replace(MARKER, "").strip() for r in RULE_RE.findall(sys_old)]
+    rules = [r for r in rules if r]
     base = (c.get("base_system") or "").strip() if req.get("tools") else ""
     sys_new = "\n\n".join(([base] if base else []) + rules)
     if sys_new:

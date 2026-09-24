@@ -28,6 +28,7 @@ require $root . '/src/ModelCatalog.php';
 require $root . '/src/Usage.php';
 require $root . '/src/Releases.php';
 require $root . '/src/Keys.php';
+require $root . '/src/AgyPrompt.php';
 require $root . '/src/Files.php';
 require $root . '/src/Translator.php';
 require $root . '/src/Endpoints.php';
@@ -266,7 +267,11 @@ switch (true) {
         break;
 
     case $path === '/v1/images/generations' && $method === 'POST':
-        Endpoints::images($cfg, $req);
+        Endpoints::images($cfg, $req, $keyLabel);
+        break;
+
+    case $path === '/v1/agy-prompt' && ($method === 'GET' || $method === 'POST'):
+        AgyPrompt::handle($cfg, $req, $keyLabel, $method);
         break;
 
     case $path === '/v1/usage' && $method === 'GET':
