@@ -1,49 +1,22 @@
 #!/bin/sh
-# Общий выключатель промпта agy — значение «для всех ключей» в шлюзе
-# (storage/agy-prompt.json, см. src/AgyPrompt.php). Свои значения у
-# отдельных ключей главнее; их меняют через /v1/agy-prompt или /agy в
-# Gemini Desktop.
-#   agy-prompt        — что сейчас
-#   agy-prompt on     — промпт agy идёт как есть (по умолчанию)
-#   agy-prompt off    — вырезать промпт agy
-# Действует со следующего запроса, перезапуск не нужен.
+# Кому из клиентов шлюза можно самим выключать промпт agy — обёртка над
+# bin/agy-prompt.php шлюза, там же описание:
+#   agy-prompt                     кому разрешено и кто выключил
+#   agy-prompt on all | off all    разрешить или запретить всем
+#   agy-prompt on|off|default <ключ, его начало или имя> ...
 # Лицензия: MIT с условием Commons Clause (продавать нельзя) — см. LICENSE.
 UNIT=/etc/systemd/system/agy-mitm.service
-if [ -z "$GATEWAY" ] && [ -f "$UNIT" ]; then
-    GATEWAY=$(sed -nE 's/^Environment=GATEWAY=(.*)$/\1/p' "$UNIT" | tail -1)
+if [ -f "$UNIT" ]; then
+    [ -z "$GATEWAY" ] && GATEWAY=$(sed -nE 's/^Environment=GATEWAY=(.*)$/\1/p' "$UNIT" | tail -1)
+    [ -z "$PHP" ] && PHP=$(sed -nE 's/^Environment=PHP=(.*)$/\1/p' "$UNIT" | tail -1)
 fi
 GATEWAY=${GATEWAY:-/var/www/agy-gateway}
+PHP=${PHP:-php}
 
-case "$1" in
-    on|off|"") ;;
-    *) echo "использование: agy-prompt [on|off]" >&2; exit 2 ;;
-esac
-
-python3 - "$GATEWAY/storage/agy-prompt.json" "$1" <<'PY'
-import json, os, sys, tempfile
-path, value = sys.argv[1], sys.argv[2]
-try:
-    with open(path, encoding="utf-8") as f:
-        state = json.load(f)
-except FileNotFoundError:
-    state = {}
-state.setdefault("all", "on")
-state.setdefault("keys", {})
-if value:
-    state["all"] = value
-    folder = os.path.dirname(path)
-    fd, tmp = tempfile.mkstemp(dir=folder)
-    with os.fdopen(fd, "w", encoding="utf-8") as f:
-        json.dump(state, f, ensure_ascii=False, indent=4)
-        f.write("\n")
-    # Файл читает и пишет шлюз из-под своего пользователя — отдаём ему.
-    st = os.stat(folder)
-    os.chown(tmp, st.st_uid, st.st_gid)
-    os.chmod(tmp, 0o664)
-    os.replace(tmp, path)
-own = state["keys"]
-print("промпт agy для всех: " + ("как есть (on)" if state["all"] != "off" else "вырезается (off)"))
-if own:
-    print("своё значение у ключей: %d (off: %d, on: %d)" % (
-        len(own), sum(v == "off" for v in own.values()), sum(v == "on" for v in own.values())))
-PY
+# Файл пишет и шлюз из-под своего пользователя — запускаем от него же,
+# иначе после первой правки отсюда шлюз не сможет его перезаписать.
+OWNER=$(stat -c %U "$GATEWAY/storage")
+if [ "$(id -un)" = "$OWNER" ]; then
+    exec "$PHP" "$GATEWAY/bin/agy-prompt.php" "$@"
+fi
+exec runuser -u "$OWNER" -- "$PHP" "$GATEWAY/bin/agy-prompt.php" "$@"

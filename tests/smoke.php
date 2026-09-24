@@ -200,38 +200,35 @@ if (str_starts_with((string) $text, 'Ответ заглушки')) {
 check('usage не пустой', (int) ($chat['usage']['total_tokens'] ?? 0) > 0, 'total_tokens = ' . ($chat['usage']['total_tokens'] ?? 0)
     . (!empty($chat['usage']['estimated']) ? ' (оценка, CLI не сообщает расход)' : ''));
 
-// 5а. выключатель промпта agy (/v1/agy-prompt)
+// 5а. промпт agy по желанию клиента (/v1/agy-prompt). Разрешает его сервер
+// (bin/agy-prompt.php); без разрешения клиент не может ничего.
 $r = req('GET', $base . '/v1/agy-prompt', null, $key);
 $ap = json_decode($r['body'], true);
 check('GET /v1/agy-prompt', $r['status'] === 200 && ($ap['object'] ?? '') === 'agy_prompt',
-    'для всех: ' . ($ap['all'] ?? '?') . ', перехватчик: ' . (!empty($ap['interceptor']) ? 'есть' : 'нет'));
-if (is_array($ap)) {
-    // Чужие ключи и общее значение — только с токеном управления.
-    $r = req('POST', $base . '/v1/agy-prompt', ['agy_prompt' => 'off', 'keys' => 'all'], $key);
-    check('agy-prompt: «для всех» без токена -> 403', $r['status'] === 403, 'HTTP ' . $r['status']);
-
+    'разрешено: ' . (!empty($ap['allowed']) ? 'да' : 'нет') . ', промпт: ' . ($ap['agy_prompt'] ?? '?'));
+if (is_array($ap) && empty($ap['allowed'])) {
     $r = req('POST', $base . '/v1/agy-prompt', ['agy_prompt' => 'off'], $key);
-    if (empty($ap['interceptor'])) {
-        check('agy-prompt: без перехватчика off не принимается', $r['status'] === 409, 'HTTP ' . $r['status']);
-    } else {
-        $mine = json_decode($r['body'], true);
-        check('agy-prompt: свой ключ -> off', $r['status'] === 200 && ($mine['self']['effective'] ?? '') === 'off', 'HTTP ' . $r['status']);
-        $r = req('POST', $base . '/v1/chat/completions', [
-            'model' => $model,
-            'messages' => [['role' => 'user', 'content' => 'Привет']],
-        ], $key, false, $sess('strip'));
-        $t = (string) (json_decode($r['body'], true)['choices'][0]['message']['content'] ?? '');
-        // У заглушки CLI видно, дошла ли пометка для перехватчика до GEMINI.md.
-        if (str_starts_with($t, 'Ответ заглушки')) {
-            check('agy-prompt: пометка дошла до CLI', str_contains($t, 'strip-agy-prompt'), trim(mb_substr((string) strstr($t, 'Правила'), 0, 70)));
-        }
-        // Файл с пометкой пишет шлюз, а не модель: в ответ он попасть не должен.
-        check('agy-prompt: GEMINI.md не выложен как файл модели', !str_contains($t, 'GEMINI.md'), $t === '' ? 'пустой ответ' : '');
-        $r = req('POST', $base . '/v1/agy-prompt', ['agy_prompt' => 'default'], $key);
-        $back = json_decode($r['body'], true);
-        check('agy-prompt: default возвращает общее значение', $r['status'] === 200
-            && ($back['self']['agy_prompt'] ?? '') === 'default', 'HTTP ' . $r['status']);
+    check('agy-prompt: без разрешения сервера -> 403', $r['status'] === 403, 'HTTP ' . $r['status']);
+} elseif (is_array($ap)) {
+    $r = req('POST', $base . '/v1/agy-prompt', ['agy_prompt' => 'off', 'keys' => 'all'], $key);
+    check('agy-prompt: чужие ключи отсюда не трогаются', $r['status'] === 400, 'HTTP ' . $r['status']);
+    $r = req('POST', $base . '/v1/agy-prompt', ['agy_prompt' => 'off'], $key);
+    check('agy-prompt: свой ключ -> off', $r['status'] === 200
+        && (json_decode($r['body'], true)['agy_prompt'] ?? '') === 'off', 'HTTP ' . $r['status']);
+    $r = req('POST', $base . '/v1/chat/completions', [
+        'model' => $model,
+        'messages' => [['role' => 'user', 'content' => 'Привет']],
+    ], $key, false, $sess('strip'));
+    $t = (string) (json_decode($r['body'], true)['choices'][0]['message']['content'] ?? '');
+    // У заглушки CLI видно, дошла ли пометка для перехватчика до GEMINI.md.
+    if (str_starts_with($t, 'Ответ заглушки')) {
+        check('agy-prompt: пометка дошла до CLI', str_contains($t, 'strip-agy-prompt'), trim(mb_substr((string) strstr($t, 'Правила'), 0, 70)));
     }
+    // Файл с пометкой пишет шлюз, а не модель: в ответ он попасть не должен.
+    check('agy-prompt: GEMINI.md не выложен как файл модели', !str_contains($t, 'GEMINI.md'), $t === '' ? 'пустой ответ' : '');
+    $r = req('POST', $base . '/v1/agy-prompt', ['agy_prompt' => 'on'], $key);
+    check('agy-prompt: свой ключ -> on', $r['status'] === 200
+        && (json_decode($r['body'], true)['agy_prompt'] ?? '') === 'on', 'HTTP ' . $r['status']);
 }
 
 // 6. картинка на вход (красный квадрат 8x8 PNG, сгенерирован прямо здесь)
