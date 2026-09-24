@@ -3,6 +3,7 @@
 # «Без промпта agy»). Покупной прокси берётся из config.php шлюза —
 # cli.upstream_proxy, — так что при его смене правится одно место
 # и перезапускается служба: systemctl restart agy-mitm.
+# Лицензия: MIT с условием Commons Clause (продавать нельзя) — см. LICENSE.
 HERE=$(dirname "$(readlink -f "$0")")
 # Где шлюз и чем запускать PHP — задаются в agy-mitm.service.
 export GATEWAY=${GATEWAY:-/var/www/agy-gateway}
