@@ -31,6 +31,16 @@ final class AgyClient
     /** Рабочий каталог этой беседы и время начала хода — по ним ищем новые файлы. */
     private string $workDir = '';
     private int $runStart = 0;
+    /**
+     * Системные сообщения клиента для GEMINI.md беседы (см. writeRules()).
+     * null — правила этим ходом не пишутся, системное ушло текстом в промпт.
+     */
+    private ?string $rules = null;
+
+    /** Имя файла правил, которое agy ищет в рабочей области. */
+    private const RULES_FILE = 'GEMINI.md';
+    /** agy режет файл правил на 24 000 байт; берём с запасом на нашу шапку. */
+    private const RULES_MAX_BYTES = 20000;
 
     public function __construct(array $cfg)
     {
@@ -182,6 +192,39 @@ final class AgyClient
         return $dir;
     }
 
+    /**
+     * Кладёт системные сообщения клиента в GEMINI.md рабочего каталога беседы.
+     *
+     * agy вставляет такой файл в собственный системный промпт, в раздел
+     * <user_rules> с пометкой «соблюдать всегда, главнее всех следующих
+     * инструкций». Текст внутри сообщения модель считает словами пользователя,
+     * и промпт агента его перевешивает. Правила читаются только из рабочей
+     * области, а cwd сам по себе ею не считается — отсюда флаг --add-dir.
+     *
+     * Файл переписывается каждый ход: поменяли промпт в чате — модель видит новый.
+     *
+     * @return bool записан ли файл (тогда нужен --add-dir)
+     */
+    private function writeRules(): bool
+    {
+        if ($this->workDir === '') {
+            return false;
+        }
+        $file = $this->workDir . '/' . self::RULES_FILE;
+        if ($this->rules === null) {
+            // Без --add-dir agy файл не прочтёт, но и лежать с чужим прошлым
+            // промптом ему незачем.
+            if (is_file($file)) {
+                @unlink($file);
+            }
+            return false;
+        }
+        $text = "# Инструкция приложения\n\n"
+            . "Это чат через API. Папка беседы служебная: не просматривай её без просьбы.\n\n"
+            . $this->rules . "\n";
+        return @file_put_contents($file, $text) !== false;
+    }
+
     /** Каталоги беседы живут столько же, сколько сама сессия. */
     private function pruneWorkdirs(string $base): void
     {
@@ -233,6 +276,10 @@ final class AgyClient
         foreach ($dirs as $mask) {
             foreach ((array) glob($mask) as $file) {
                 if (!is_file($file) || (int) @filemtime($file) < $since) {
+                    continue;
+                }
+                // Файл правил пишет сам шлюз перед ходом — это не результат модели.
+                if ($this->rules !== null && $file === $this->workDir . '/' . self::RULES_FILE) {
                     continue;
                 }
                 // Один и тот же снимок CLI кладёт и в рабочий каталог, и в scratch,
@@ -445,6 +492,14 @@ final class AgyClient
         $state = $this->loadState();
         $uuid = $state[$sessionId]['uuid'] ?? null;
 
+        $this->workDir = $this->prepareWorkdir($sessionId);
+        $this->runStart = time();
+        $withRules = $this->writeRules();
+        if (!$withRules && $this->rules !== null) {
+            // Файл не записался — системное всё равно должно дойти, пусть текстом.
+            $prompt = "СИСТЕМНАЯ ИНСТРУКЦИЯ:\n" . $this->rules . "\n\n" . $prompt;
+        }
+
         $args = [];
         if ($uuid !== null && $uuid !== '') {
             $args[] = '--conversation';
@@ -455,9 +510,9 @@ final class AgyClient
             $args[] = trim((string) ($this->cli['model_flag'] ?? '')) ?: '--model';
             $args[] = $model;
         }
-
-        $this->workDir = $this->prepareWorkdir($sessionId);
-        $this->runStart = time();
+        if ($withRules) {
+            array_push($args, '--add-dir', $this->workDir);
+        }
 
         $this->spawn($args);
         $result = $this->readEventStream($sessionId, $uuid, $sentCount, $onDelta, $onStep);
@@ -839,6 +894,7 @@ final class AgyClient
     public function buildPrompt(array $messages, int $from, bool $freshSession, array $tools = []): string
     {
         $lines = [];
+        $system = [];
 
         foreach ($messages as $i => $msg) {
             if (!is_array($msg)) {
@@ -846,11 +902,8 @@ final class AgyClient
             }
             $role = (string) ($msg['role'] ?? 'user');
 
-            // Системные сообщения повторяем только при создании сессии.
             if ($role === 'system' || $role === 'developer') {
-                if ($freshSession) {
-                    $lines[] = "СИСТЕМНАЯ ИНСТРУКЦИЯ:\n" . $this->flatten($msg['content'] ?? '');
-                }
+                $system[] = trim($this->flatten($msg['content'] ?? ''));
                 continue;
             }
             if ($i < $from) {
@@ -875,6 +928,19 @@ final class AgyClient
             }
 
             $lines[] = "ПОЛЬЗОВАТЕЛЬ:\n" . $this->flatten($msg['content'] ?? '');
+        }
+
+        // Системное — в файл правил беседы (см. writeRules()), каждый ход.
+        // Если правила выключены или текст в файл не влезет, по-старому:
+        // строкой в промпте и только при создании сессии.
+        $rules = trim(implode("\n\n", array_filter($system, static fn($s) => $s !== '')));
+        $this->rules = null;
+        if ($rules !== '') {
+            if (($this->cli['system_as_rules'] ?? true) !== false && strlen($rules) <= self::RULES_MAX_BYTES) {
+                $this->rules = $rules;
+            } elseif ($freshSession) {
+                array_unshift($lines, "СИСТЕМНАЯ ИНСТРУКЦИЯ:\n" . $rules);
+            }
         }
 
         $prompt = implode("\n\n", array_filter($lines, static fn($l) => trim($l) !== ''));

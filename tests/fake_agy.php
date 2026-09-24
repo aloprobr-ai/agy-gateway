@@ -46,6 +46,7 @@ if (in_array('models', $args, true) || in_array('--list-models', $args, true)) {
 $prompt = '';
 $conversation = '';
 $model = '';
+$addDirs = [];
 for ($i = 0; $i < count($args); $i++) {
     if (($args[$i] === '-p' || $args[$i] === '--print' || $args[$i] === '--prompt') && isset($args[$i + 1])) {
         $prompt = $args[++$i];
@@ -53,6 +54,8 @@ for ($i = 0; $i < count($args); $i++) {
         $conversation = $args[++$i];
     } elseif ($args[$i] === '--model' && isset($args[$i + 1])) {
         $model = $args[++$i];
+    } elseif ($args[$i] === '--add-dir' && isset($args[$i + 1])) {
+        $addDirs[] = $args[++$i];
     }
 }
 
@@ -102,6 +105,22 @@ if (str_contains($prompt, 'tool_calls') && preg_match('/погод/iu', $prompt)
     $answer = 'Ответ заглушки CLI'
         . ($model !== '' ? " (модель: {$model})" : '')
         . ". Беседа: {$conversation}. Промпт был длиной " . strlen($prompt) . " байт.";
+
+    // Правила, как у настоящего: GEMINI.md читается только из каталогов рабочей
+    // области (--add-dir), а не из cwd. Отвечаем последней строкой файла —
+    // шлюз кладёт туда системное сообщение клиента.
+    $rules = [];
+    foreach ($addDirs as $dir) {
+        $file = rtrim($dir, '/\\') . '/GEMINI.md';
+        if (is_file($file)) {
+            $rows = array_values(array_filter(array_map('trim', file($file))));
+            $rules[] = (string) end($rows);
+        }
+    }
+    $answer .= ' Правила: ' . ($rules !== [] ? implode(' | ', $rules) : 'нет') . '.';
+    if (str_contains($prompt, 'СИСТЕМНАЯ ИНСТРУКЦИЯ')) {
+        $answer .= ' Системное пришло текстом.';
+    }
 
     // Проверка того, что картинка из запроса реально долежала до CLI.
     if (preg_match('/изображение сохранено в файл: "([^"]+)"/u', $prompt, $m)) {

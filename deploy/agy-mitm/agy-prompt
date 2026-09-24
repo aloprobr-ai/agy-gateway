@@ -1,0 +1,32 @@
+#!/bin/sh
+# Общий переключатель промпта agy для всех запросов шлюза.
+#   agy-prompt        — что сейчас
+#   agy-prompt on     — промпт agy идёт как есть (по умолчанию)
+#   agy-prompt off    — вырезать промпт agy (strip.py)
+# Действует со следующего запроса, перезапуск не нужен.
+CONF=${CONF:-/opt/agy-mitm/strip.json}
+
+case "$1" in
+    on)  VALUE=False ;;
+    off) VALUE=True ;;
+    "")  VALUE= ;;
+    *)   echo "использование: agy-prompt [on|off]" >&2; exit 2 ;;
+esac
+
+python3 - "$CONF" "$VALUE" <<'PY'
+import json, os, sys, tempfile
+path, value = sys.argv[1], sys.argv[2]
+with open(path, encoding="utf-8") as f:
+    c = json.load(f)
+if value:
+    c["strip_prompt"] = value == "True"
+    # Через временный файл: strip.py читает конфиг на каждый запрос
+    # и не должен застать его недописанным.
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path))
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        json.dump(c, f, ensure_ascii=False, indent=2)
+        f.write("\n")
+    os.chmod(tmp, 0o644)
+    os.replace(tmp, path)
+print("промпт agy: " + ("вырезается (off)" if c.get("strip_prompt") is True else "как есть (on)"))
+PY

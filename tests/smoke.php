@@ -189,6 +189,14 @@ $r = req('POST', $base . '/v1/chat/completions', [
 $chat = json_decode($r['body'], true);
 $text = $chat['choices'][0]['message']['content'] ?? '';
 check('POST /v1/chat/completions', $r['status'] === 200 && $text !== '', trim(mb_substr((string) $text, 0, 60)));
+// Заглушка CLI рассказывает, как до неё дошло системное сообщение: оно должно
+// лечь в GEMINI.md беседы (agy ставит такие правила выше своего промпта), а не
+// текстом в сообщение. У настоящего agy так не спросить — там проверка пропускается.
+if (str_starts_with((string) $text, 'Ответ заглушки')) {
+    check('системное -> GEMINI.md, не текстом',
+        str_contains($text, 'Правила: Отвечай одним словом.') && !str_contains($text, 'пришло текстом'),
+        trim(mb_substr((string) strstr($text, 'Правила'), 0, 70)));
+}
 check('usage не пустой', (int) ($chat['usage']['total_tokens'] ?? 0) > 0, 'total_tokens = ' . ($chat['usage']['total_tokens'] ?? 0)
     . (!empty($chat['usage']['estimated']) ? ' (оценка, CLI не сообщает расход)' : ''));
 
